@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orderfulfilment-engine.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "orderfulfilment-engine.name" . }}
+    helm.sh/chart: {{ include "orderfulfilment-engine.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "orderfulfilment-engine.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "orderfulfilment-engine.name" . }}
+        app: {{ .Release.Name }}
+        version: v1
+        app.kubernetes.io/instance: {{ .Release.Name }}
+         {{- if .Values.podidbinding }}
+        aadpodidbinding: {{ .Values.podidbinding }}
+          {{- end }}
+    spec: 
+      {{- if .Values.serviceAccountName }}
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      {{- end }}
+      {{- if .Values.image.pullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.image.pullSecret }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.containerPort | default 80 }}
+              protocol: TCP
+          {{- if .Values.healthCheck }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.liveness | default "/" }}
+              port: {{ .Values.healthCheck.port | default 8080 }}
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds | default 60 }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds | default 60 }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds | default 10 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.readiness | default "/" }}
+              port: {{ .Values.healthCheck.port | default 8080 }}
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds | default 60 }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds | default 60 }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds | default 10 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.config }}
+          volumeMounts:
+            {{- range $index, $val := .Values.config.fileMapping }}
+            - name: {{ .Chart.Name }}-config
+              mountPath: {{ $val.mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+          {{- if or .Values.envVariables .Values.envSecrets }}
+          env:                                                                                                                                                  {{- if .Values.commonConfigMap }}
+            {{- $configMapName := printf "%s" .Values.commonConfigMap.name }}
+              {{- range $key, $val := .Values.commonConfigMap.variables }}
+              - name: {{ $key }}
+                valueFrom:
+                  configMapKeyRef:
+                    name: {{ $configMapName }}
+                    key: {{ $val }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.envSecrets }}
+            {{- $secretKeyObj := printf "%s" .Values.envSecrets.secretName }}
+              {{- range $key, $val := .Values.envSecrets.secretvarMapping }}
+              - name: {{ $key }}
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ $secretKeyObj }}
+                    key: {{ $val }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.envVariables }}
+            {{- range $key, $val := .Values.envVariables }}
+              - name: {{ $key }}
+                value: {{ $val | quote }}
+            {{- end }}
+            {{- end }}
+          {{- end}}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+

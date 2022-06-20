@@ -1,0 +1,34 @@
+   
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ .Values.service.name }}
+  labels:
+    app.kubernetes.io/name: {{ include "orderfulfilment-engine.name" . }}
+    helm.sh/chart: {{ include "orderfulfilment-engine.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  gateways:
+    - {{ .Values.ingressGateway.name }} 
+  hosts:
+    - {{ .Values.ingressGateway.host | quote }}
+  http:
+    - match:
+      - uri:
+          prefix: {{ .Values.ingressGateway.matchPrefix }}
+      rewrite:
+        uri: {{ .Values.ingressGateway.rewrite }}    
+      route:
+      - destination:
+          host: {{ .Values.service.name }}
+          port:
+            number: {{ .Values.service.port }}
+{{- if .Values.retries }}
+      retries:
+{{ toYaml .Values.retries | indent 8 }}
+      timeout: {{ required "You must specify an overall timeout to use retries" .Values.overallTimeout}}
+{{- else if .Values.overallTimeout }}
+      timeout: {{ .Values.overallTimeout }}
+{{- end }}
+

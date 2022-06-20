@@ -1,0 +1,144 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+# variable used by pipeline:
+#   $(ACRName) = <name of ACR>
+#   $(SonarCloudUrl) = < Sonar Cloud End Point API)
+#   $(APPIMAGE) = $(ACRName)/$(Build.DefinitionName):$(Build.BuildNumber)
+
+trigger:
+- main
+
+pool:
+  name: PrivatePool
+  
+variables: 
+- group: "AKSDevEnvironment"
+- name: grpSonarKey
+  value : $[variables.SonarKey]
+- name: grpSonarCloudUrl
+  value: $[variables.SonarCloudUrl]    
+- name: grpSubscriptionId
+  value: $[variables.SubscriptionId]
+- name: grpClientId
+  value: $[variables.ClientId]    
+- name: grpClientSecret
+  value: $[variables.ClientSecret]
+- name: grpClientAccessKey
+  value: $[variables.ClientAccessKey]
+- name: grpACRName
+  value: $[variables.ACRName]
+- name: grpTenantId  
+  value: $[variables.TenantId]
+- name: reponame
+  value: 'orderfulfilmentengine'
+- name: sonarorgname 
+  value : 'ptcinc'
+- name : sonarprojectKey
+  value : 'ptcinc_orderfulfilmentengine'
+- name:  sonarProjectName
+  value : 'orderfulfilmentengine'
+- name: imagename
+  value: 'orderfulfilment'
+
+stages : 
+- stage: build
+  displayName: 'Build Stage'
+  jobs:
+  - job: buildtasks
+    displayName: 'Performing Build related activities'
+    continueOnError: false
+    steps:
+    - task: PowerShell@2
+      displayName: "Generating runtime parameter dynamically"
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Write your PowerShell commands here.
+          $APPIMAGE="$(grpACRName)"+"/"+"$(imagename)"+":"+"$(Build.BuildNumber)"
+          Write-Host "##vso[task.setvariable variable=APPIMAGE;]$APPIMAGE"
+    - task: SonarCloudPrepare@1
+      displayName: 'Connecting to Sonar Cloud'
+      inputs:
+        SonarCloud: 'PTC-SonarCloud'
+        organization: '$(sonarorgname)'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: '$(sonarprojectKey)'
+        cliProjectName: '$(sonarProjectName)'
+        cliSources: 'src/main'
+    - task: Maven@3
+      displayName: 'Performing maven build including test run'
+      inputs:
+        mavenPomFile: 'pom.xml'
+        publishJUnitResults: true
+        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+        testRunTitle: 'Pipeline Test Result'
+        javaHomeOption: 'JDKVersion'
+        mavenVersionOption: 'Default'
+        mavenAuthenticateFeed: false
+        effectivePomSkip: false
+        sonarQubeRunAnalysis: true
+    - task: SonarQubePublish@5
+      displayName: 'Publish Quality Gate Result'
+      inputs:
+        pollingTimeoutSec: '300'
+    - task: PowerShell@2
+      displayName: "Checking status of Quality Gates Execution"
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Write your PowerShell commands here.
+          $Token = [System.Text.Encoding]::UTF8.GetBytes("$(grpSonarKey)" + ":")
+          $TokenInBase64 = [System.Convert]::ToBase64String($Token)
+          $basicAuth = [string]::Format("Basic {0}", $TokenInBase64)
+          $Headers = @{ Authorization = $basicAuth }
+          $QualityGateResult = Invoke-RestMethod -Method Get -Uri https://$(grpSonarCloudUrl)/api/qualitygates/project_status?projectKey=$(sonarprojectKey) -Headers $Headers 
+          $QualityGateResult | ConvertTo-Json | Write-Host          
+          if ($QualityGateResult.projectStatus.status -eq "OK"){
+            Write-Host "Quality Gate Succeeded"
+          }
+          else{
+              throw "Quality gate failed. Please check and fix the issues by reviewing the same."
+          }
+    - task: PowerShell@2
+      displayName: 'Building image...'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host 'Image name for this build: $(APPIMAGE)'
+          # Write your PowerShell commands here.
+          az login --service-principal -u $(grpClientId) -p $(grpClientSecret) --tenant $(grpTenantId)
+          az account set -s $(grpSubscriptionId)
+          az acr login -n $(grpACRName)
+          docker build -t $(APPIMAGE) -f Dockerfile .
+    - task: prisma-cloud-compute-scan@3
+      displayName: 'Performing Vulnerability Scan for Newly created Image'
+      inputs:
+        scanType: 'images'
+        twistlockService: 'PrismaCloudComputeScan'
+        artifact: '$(APPIMAGE)' 
+    - task: PowerShell@2
+      displayName: Connect to ACR and publish Docker Image
+      inputs:
+        targetType: 'inline'
+        script: |
+          az login --service-principal -u $(grpClientId) -p $(grpClientSecret) --tenant $(grpTenantId)
+          az account set -s $(grpSubscriptionId)
+          az acr login -n $(grpACRName)
+          docker push $(APPIMAGE)
+    - task: CopyFiles@2
+      displayName: 'Copy deployment artifacts'
+      inputs:
+        SourceFolder: 'helm'
+        Contents: '**'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+        CleanTargetFolder: true
+        OverWrite: true
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Build Artifacts'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
